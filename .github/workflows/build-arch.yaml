@@ -15,8 +15,6 @@ jobs:
       matrix:
         board:
           - octopus
-          - dedede
-          - jacuzzi
 
     steps:
     - uses: actions/checkout@v1
