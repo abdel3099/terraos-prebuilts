@@ -24,12 +24,15 @@ jobs:
 
     steps:
     - name: Checkout Code
-      uses: actions/checkout@v4 # Upgraded from v1 to avoid modern node deprecations
+      uses: actions/checkout@v4
 
     - name: Prepare Arch Environment & Dependencies
       run: |
-        # Update keyring and sync package databases
-        pacman -Syu --noconfirm
+        # Initialize keyring to prevent signature errors during update
+        pacman -Sy --noconfirm archlinux-keyring
+        
+        # Update system and sync package databases
+        pacman -Su --noconfirm
         pacman -S --needed --noconfirm base-devel git sudo
 
         # Create a non-root 'build' user (makepkg cannot run as root)
@@ -43,7 +46,8 @@ jobs:
       run: |
         # Switch to the non-root build user to install yay
         sudo -u build bash << 'EOF'
-          git clone https://archlinux.org /tmp/yay-bin
+          # Fixed: Use the correct AUR git URL instead of the website
+          git clone https://aur.archlinux.org/yay-bin.git /tmp/yay-bin
           cd /tmp/yay-bin
           makepkg -si --noconfirm
         EOF
@@ -66,6 +70,11 @@ jobs:
         # Re-verify permissions for the runner build steps
         mkdir -p build
         
+        # Define potentially undefined variables to prevent 'unbound variable' errors
+        shim="${shim:-}"
+        reco="${reco:-}"
+        reven="${reven:-}"
+
         if [ "${board}" == "jacuzzi" ]; then
           bash ./scripts/build_stage1.sh terraos_jacuzzi
           board="jacuzzi_makomo"
