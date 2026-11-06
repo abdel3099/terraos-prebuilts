@@ -56,7 +56,7 @@ jobs:
         packages=(
           wget util-linux e2fsprogs zstd zip pv coreutils 
           sed findutils squashfs-tools tar lsof arch-install-scripts 
-          cloud-utils
+          cloud-utils unzip rsync bc
         )
 
         for package in "${packages[@]}"; do
@@ -67,10 +67,10 @@ jobs:
           fi
         done
 
-        # Re-verify permissions for the runner build steps
+        #  Re-verify permissions for the runner build steps
         mkdir -p build
         
-        # Define potentially undefined variables to prevent 'unbound variable' errors
+        #  Define potentially undefined variables to prevent 'unbound variable' errors
         shim="${shim:-}"
         reco="${reco:-}"
         reven="${reven:-}"
