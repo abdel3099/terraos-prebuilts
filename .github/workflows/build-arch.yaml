@@ -11,64 +11,71 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    
+    # Run the entire job inside a native Arch Linux container environment
+    container:
+      image: archlinux:latest
+      options: --privileged # Kept in case your build scripts mount loop devices/images
+
     strategy:
       matrix:
         board:
           - octopus
 
     steps:
-    - uses: actions/checkout@v1
-    - name: Install Arch Linux (Credits to zaoqi on Github)
-      run: curl -L https://github.com/zaoqi/github-actions-archlinux/raw/master/install.sh | sh
+    - name: Checkout Code
+      uses: actions/checkout@v4 # Upgraded from v1 to avoid modern node deprecations
+
+    - name: Prepare Arch Environment & Dependencies
+      run: |
+        # Update keyring and sync package databases
+        pacman -Syu --noconfirm
+        pacman -S --needed --noconfirm base-devel git sudo
+
+        # Create a non-root 'build' user (makepkg cannot run as root)
+        useradd -m build
+        chown -R build:build $GITHUB_WORKSPACE
+        echo "build ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+
     - name: Build TerraOS
       env:
         board: ${{ matrix.board }}
       run: |
-        sudo pacman -S --needed git base-devel
-        git clone https://aur.archlinux.org/yay.git
-        cd yay
-        makepkg -si
+        # Switch to the non-root build user to install yay
+        sudo -u build bash << 'EOF'
+          git clone https://archlinux.org /tmp/yay-bin
+          cd /tmp/yay-bin
+          makepkg -si --noconfirm
+        EOF
 
+        # Install standard packages via Pacman & AUR packages via yay
         packages=(
-          wget
-          util-linux
-          e2fsprogs
-          zstd
-          zip
-          pv
-          coreutils
-          sed
-          findutils
-          squashfs-tools
-          tar
-          lsof
-          arch-install-scripts
+          wget util-linux e2fsprogs zstd zip pv coreutils 
+          sed findutils squashfs-tools tar lsof arch-install-scripts 
           cloud-utils
         )
 
         for package in "${packages[@]}"; do
           if pacman -Si "$package" &>/dev/null; then
-            sudo pacman -S --needed "$package"
+            pacman -S --needed --noconfirm "$package"
           else
-            yay -S --needed "$package"
+            sudo -u build yay -S --needed --noconfirm "$package"
           fi
         done
 
+        # Re-verify permissions for the runner build steps
         mkdir -p build
-        cd build
         
         if [ "${board}" == "jacuzzi" ]; then
-          bash ../scripts/build_stage1.sh terraos_jacuzzi
+          bash ./scripts/build_stage1.sh terraos_jacuzzi
           board="jacuzzi_makomo"
         else
-          bash ../scripts/build_stage1.sh terraos
+          bash ./scripts/build_stage1.sh terraos
         fi
 
-        bash ../scripts/build_aur_packages.sh
-
-        bash ../scripts/download_images.sh
-
-        bash ../scripts/build_all.sh "$shim" "$reco" "$reven"
+        bash ./scripts/build_aur_packages.sh
+        bash ./scripts/download_images.sh
+        bash ./scripts/build_all.sh "$shim" "$reco" "$reven"
 
         if [ "${board}" == "jacuzzi_makomo" ]; then
           makomoshim="$shim"
