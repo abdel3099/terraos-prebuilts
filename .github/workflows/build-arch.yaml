@@ -12,10 +12,11 @@ jobs:
   build:
     runs-on: ubuntu-latest
     
-    # Run the entire job inside a native Arch Linux container environment
+    # Pin to a specific Arch Linux image to avoid breaking changes from rolling releases
+    # Check https://hub.docker.com/r/archlinux/tags for recent stable dates
     container:
-      image: archlinux:latest
-      options: --privileged # Kept in case your build scripts mount loop devices/images
+      image: archlinux:base-2026-10-01 # Replace with a recent valid date tag
+      options: --privileged
 
     strategy:
       matrix:
@@ -28,76 +29,103 @@ jobs:
 
     - name: Prepare Arch Environment & Dependencies
       run: |
-        # Initialize keyring to prevent signature errors during update
-        pacman -Sy --noconfirm archlinux-keyring
+        set -e # Exit immediately on error
         
-        # Update system and sync package databases
-        pacman -Su --noconfirm
-        pacman -S --needed --noconfirm base-devel git sudo
+        # Initialize keyring and update system
+        pacman-key --init
+        pacman-key --populate archlinux
+        pacman -Syu --noconfirm
+        
+        # Install essential build tools
+        pacman -S --needed --noconfirm \
+          base-devel \
+          git \
+          sudo \
+          wget \
+          curl \
+          unzip \
+          rsync \
+          bc \
+          util-linux \
+          e2fsprogs \
+          zstd \
+          squashfs-tools \
+          arch-install-scripts \
+          cloud-utils
 
-        # Create a non-root 'build' user (makepkg cannot run as root)
+        # Create non-root build user
         useradd -m build
         chown -R build:build $GITHUB_WORKSPACE
+        
+        # Allow passwordless sudo for build user
         echo "build ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
 
-    - name: Build TerraOS
-      env:
-        board: ${{ matrix.board }}
+    - name: Install Yay (AUR Helper)
       run: |
-        # Switch to the non-root build user to install yay
+        set -e
+        # Clone yay-bin as the build user to avoid root-owned cache issues
         sudo -u build bash << 'EOF'
-          # Fixed: Use the correct AUR git URL instead of the website
-          git clone https://aur.archlinux.org/yay-bin.git /tmp/yay-bin
-          cd /tmp/yay-bin
+          cd ~
+          git clone https://aur.archlinux.org/yay-bin.git
+          cd yay-bin
           makepkg -si --noconfirm
         EOF
 
-        # Install standard packages via Pacman & AUR packages via yay
-        packages=(
-          wget util-linux e2fsprogs zstd zip pv coreutils 
-          sed findutils squashfs-tools tar lsof arch-install-scripts 
-          cloud-utils unzip rsync bc
-        )
-
-        for package in "${packages[@]}"; do
-          if pacman -Si "$package" &>/dev/null; then
-            pacman -S --needed --noconfirm "$package"
-          else
-            sudo -u build yay -S --needed --noconfirm "$package"
-          fi
-        done
-
-        #  Re-verify permissions for the runner build steps
-        mkdir -p build
+    - name: Build TerraOS
+      env:
+        BOARD: ${{ matrix.board }}
+        # Define default values for variables used in scripts to prevent unbound errors
+        SHIM: ""
+        RECO: ""
+        REVEN: ""
+      run: |
+        set -e
+        cd $GITHUB_WORKSPACE
         
-        #  Define potentially undefined variables to prevent 'unbound variable' errors
-        shim="${shim:-}"
-        reco="${reco:-}"
-        reven="${reven:-}"
-
-        if [ "${board}" == "jacuzzi" ]; then
+        # Export variables so child scripts can see them
+        export BOARD="$BOARD"
+        
+        # Run stage 1 based on board
+        if [ "$BOARD" == "jacuzzi" ]; then
           bash ./scripts/build_stage1.sh terraos_jacuzzi
-          board="jacuzzi_makomo"
+          # Note: If jacuzzi logic changes the effective board name for later steps, 
+          # handle it here. Based on your original code, it seems to swap names.
+          EFFECTIVE_BOARD="jacuzzi_makomo"
         else
           bash ./scripts/build_stage1.sh terraos
+          EFFECTIVE_BOARD="$BOARD"
         fi
 
+        # Install additional AUR packages if needed by the build scripts
+        # Using yay as the build user
+        sudo -u build yay -S --needed --noconfirm lsof pv zip tar findutils sed coreutils || true
+
+        # Continue with remaining build steps
         bash ./scripts/build_aur_packages.sh
         bash ./scripts/download_images.sh
-        bash ./scripts/build_all.sh "$shim" "$reco" "$reven"
+        
+        # Pass empty strings if not provided, ensuring scripts don't fail on unset vars
+        bash ./scripts/build_all.sh "$SHIM" "$RECO" "$REVEN"
 
-        if [ "${board}" == "jacuzzi_makomo" ]; then
-          makomoshim="$shim"
-          shim=$(echo "$shim" | sed 's/jacuzzi_makomo/jacuzzi/')
-          mv "$makomoshim" "$shim"
-          board="jacuzzi"
+        # Handle post-build renaming/moving if applicable
+        if [ "$EFFECTIVE_BOARD" == "jacuzzi_makomo" ]; then
+          if [ -n "$SHIM" ] && [ -f "$SHIM" ]; then
+            NEW_SHIM=$(echo "$SHIM" | sed 's/jacuzzi_makomo/jacuzzi/')
+            mv "$SHIM" "$NEW_SHIM"
+            EFFECTIVE_BOARD="jacuzzi"
+          fi
         fi
+        
+        # Store final board name for upload step
+        echo "FINAL_BOARD=$EFFECTIVE_BOARD" >> $GITHUB_ENV
 
     - name: Upload built shim
       uses: softprops/action-gh-release@v2
       with:
         name: TerraOS ${{ inputs.tag }}
         tag_name: ${{ inputs.tag }}
-        files: ./${{ matrix.board }}.bin
+        # Adjust glob pattern if multiple files are generated
+        files: ./${{ env.FINAL_BOARD }}*.bin
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        
